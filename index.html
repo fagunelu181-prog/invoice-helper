@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>發票小幫手 (專業版)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+    
+    <style>
+        body { font-family: 'Noto Sans TC', sans-serif; }
+        /* 發票專用樣式 */
+        .invoice-box {
+            background-color: #fdfdfd;
+            border: 1px solid #e0e0e0;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+        .invoice-border {
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 20px;
+            position: relative;
+        }
+        /* 模擬印章 */
+        .stamp {
+            border: 2px solid #ef4444;
+            color: #ef4444;
+            border-radius: 50%;
+            width: 60px;
+            height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            transform: rotate(-15deg);
+            opacity: 0.3;
+            position: absolute;
+            top: 10px;
+            right: 10px;
+        }
+    </style>
+</head>
+<body class="bg-blue-50 min-h-screen flex items-center justify-center p-4">
+
+    <div id="app" class="w-full max-w-5xl grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
+        
+        <div class="bg-white p-6 rounded-xl shadow-lg border border-blue-100">
+            <h1 class="text-2xl font-bold text-gray-800 mb-6 flex items-center">
+                <span class="bg-blue-600 text-white w-8 h-8 flex items-center justify-center rounded-lg mr-3 text-lg">AI</span>
+                發票小幫手
+            </h1>
+
+            <div class="space-y-6">
+                <div class="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                    <label class="block text-sm font-bold text-gray-700 mb-2">買方統一編號</label>
+                    <div class="flex gap-2">
+                        <input type="text" v-model="ubn" placeholder="輸入 8 碼統編 (如: 23300080)" maxlength="8"
+                            class="flex-1 p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition">
+                        <button @click="queryCompany" :disabled="isLoading"
+                            class="bg-gray-800 text-white px-6 rounded-lg hover:bg-gray-700 transition disabled:bg-gray-400 font-medium">
+                            {{ isLoading ? '...' : '查詢' }}
+                        </button>
+                    </div>
+                    <input type="text" v-model="companyName" placeholder="公司名稱會顯示在這裡" readonly
+                        class="w-full mt-2 p-3 bg-transparent border-b border-dashed border-gray-400 text-gray-800 font-bold outline-none">
+                    <p class="text-xs text-red-500 mt-1" v-if="errorMsg">{{ errorMsg }}</p>
+                </div>
+
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-600 mb-1">未稅金額 (Sales Amount)</label>
+                        <div class="relative">
+                            <span class="absolute left-3 top-3 text-gray-400">$</span>
+                            <input type="number" v-model.number="salesAmt" @input="calcFromSales"
+                                class="w-full pl-8 p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-lg">
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-600 mb-1">稅額 (Tax 5%)</label>
+                        <div class="relative">
+                            <span class="absolute left-3 top-3 text-gray-400">$</span>
+                            <input type="number" v-model.number="taxAmt" readonly
+                                class="w-full pl-8 p-3 bg-gray-100 border border-gray-300 rounded-lg text-gray-500 cursor-not-allowed">
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-bold text-blue-800 mb-1">含稅總額 (Total)</label>
+                        <div class="relative">
+                            <span class="absolute left-3 top-3 text-blue-500">$</span>
+                            <input type="number" v-model.number="totalAmt" @input="calcFromTotal"
+                                class="w-full pl-8 p-3 border-2 border-blue-200 bg-blue-50 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-xl font-bold text-blue-900">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="invoice-box p-8 rounded-sm shadow-xl relative transform transition hover:scale-[1.01] duration-300">
+            <div class="invoice-border">
+                <div class="stamp">發票</div>
+                
+                <div class="text-center mb-8">
+                    <h2 class="text-2xl font-bold tracking-[0.2em] text-gray-800 border-b-2 border-gray-800 pb-2 inline-block">電子發票證明聯</h2>
+                    <p class="text-lg font-bold mt-2">113年 12-02月</p>
+                    <p class="text-md font-mono tracking-widest mt-1">AB-12345678</p>
+                </div>
+
+                <div class="space-y-2 text-sm font-mono text-gray-700 mb-6">
+                    <div class="flex justify-between">
+                        <span>賣方統編</span>
+                        <span>00000000</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span>買方統編</span>
+                        <span class="font-bold text-lg">{{ ubn || '00000000' }}</span>
+                    </div>
+                    <div class="mt-2 text-gray-500 text-xs break-all" v-if="companyName">
+                        買受人：{{ companyName }}
+                    </div>
+                </div>
+
+                <div class="border-t border-b border-gray-300 py-2 mb-4">
+                    <div class="flex justify-between text-xs text-gray-500 mb-1">
+                        <span>品名</span>
+                        <span>金額</span>
+                    </div>
+                    <div class="flex justify-between font-bold text-gray-800">
+                        <span>資訊服務費</span>
+                        <span>{{ formatPrice(salesAmt) }}</span>
+                    </div>
+                </div>
+
+                <div class="space-y-1 text-right text-sm">
+                    <p><span class="text-gray-500 mr-4">銷售額</span> ${{ formatPrice(salesAmt) }}</p>
+                    <p><span class="text-gray-500 mr-4">稅　額</span> ${{ formatPrice(taxAmt) }}</p>
+                    <p class="text-xl font-bold mt-2 text-gray-900">總計 ${{ formatPrice(totalAmt) }}</p>
+                </div>
+
+                <div class="mt-6 bg-gray-100 p-3 text-center rounded">
+                    <p class="text-xs text-gray-500 mb-1">總計新台幣 (中文大寫)</p>
+                    <p class="text-lg font-bold text-gray-800">{{ chineseTotal }}</p>
+                </div>
+
+                <div class="mt-8 text-center text-xs text-gray-400">
+                    此為開發測試樣張，不得作為正式憑證
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        const { createApp, ref, computed } = Vue;
+
+        createApp({
+            setup() {
+                // 資料定義
+                const ubn = ref('');
+                const companyName = ref('');
+                const salesAmt = ref(''); // 未稅
+                const taxAmt = ref('');   // 稅額
+                const totalAmt = ref(''); // 總額
+                const isLoading = ref(false);
+                const errorMsg = ref('');
+
+                // 邏輯 1: 輸入未稅，算總額
+                const calcFromSales = () => {
+                    if (salesAmt.value === '') { reset(); return; }
+                    const s = parseFloat(salesAmt.value);
+                    taxAmt.value = Math.round(s * 0.05);
+                    totalAmt.value = s + taxAmt.value;
+                };
+
+                // 邏輯 2: 輸入總額，回推未稅
+                const calcFromTotal = () => {
+                    if (totalAmt.value === '') { reset(); return; }
+                    const t = parseFloat(totalAmt.value);
+                    salesAmt.value = Math.round(t / 1.05);
+                    taxAmt.value = t - salesAmt.value;
+                };
+
+                const reset = () => {
+                    salesAmt.value = '';
+                    taxAmt.value = '';
+                    totalAmt.value = '';
+                };
+
+                // 邏輯 3: 呼叫你的 Python 後端
+                const queryCompany = async () => {
+                    if (ubn.value.length !== 8) {
+                        alert('統編格式錯誤');
+                        return;
+                    }
+                    isLoading.value = true;
+                    companyName.value = '';
+                    errorMsg.value = '';
+
+                    try {
+                        // 連線到本地後端 API
+                        const res = await fetch(`/api/company/${ubn.value}`);
+                        const data = await res.json();
+                        companyName.value = data.name;
+                    } catch (e) {
+                        errorMsg.value = '連線失敗，請檢查黑視窗是否開啟';
+                        console.error(e);
+                    } finally {
+                        isLoading.value = false;
+                    }
+                };
+
+                // 邏輯 4: 金額轉中文大寫演算法
+                const chineseTotal = computed(() => {
+                    const n = totalAmt.value;
+                    if (!n) return '零元整';
+                    
+                    const digits = ['零', '壹', '貳', '參', '肆', '伍', '陸', '柒', '捌', '玖'];
+                    const units = ['', '拾', '佰', '仟'];
+                    const bigUnits = ['', '萬', '億', '兆'];
+                    
+                    let str = Math.floor(n).toString();
+                    let len = str.length;
+                    let result = '';
+                    
+                    // 簡單版演算法
+                    // 把數字反轉處理 12345 -> 54321
+                    let numStr = str.split('').reverse().join('');
+                    
+                    for (let i = 0; i < len; i++) {
+                        let digit = parseInt(numStr[i]);
+                        let unitIndex = i % 4;
+                        let bigUnitIndex = Math.floor(i / 4);
+                        
+                        // 處理單位
+                        if (unitIndex === 0 && bigUnitIndex > 0) {
+                            // 萬、億
+                            result = bigUnits[bigUnitIndex] + result;
+                        }
+                        
+                        if (digit !== 0) {
+                            result = digits[digit] + units[unitIndex] + result;
+                        } else {
+                            // 處理零的邏輯 (簡化版，確保不會出現 零萬)
+                            if (result.length > 0 && result[0] !== '零' && unitIndex !== 0) {
+                                result = '零' + result;
+                            }
+                        }
+                    }
+                    
+                    return result + '元整';
+                });
+
+                const formatPrice = (val) => {
+                    if (!val) return '0';
+                    return val.toLocaleString();
+                }
+
+                return {
+                    ubn, companyName, salesAmt, taxAmt, totalAmt,
+                    isLoading, errorMsg,
+                    calcFromSales, calcFromTotal, queryCompany,
+                    chineseTotal, formatPrice
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
