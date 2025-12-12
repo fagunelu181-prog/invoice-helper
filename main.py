@@ -1,57 +1,108 @@
 from fastapi import FastAPI
-from fastapi.responses import FileResponse # 這是新工具：用來傳送檔案
-import uvicorn
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse # 新增這行
 import requests
-import urllib3
-import os
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+import re
+import os # 新增這行
 
 app = FastAPI()
 
-# 注意：我們把 CORS 拿掉了，因為現在前端後端在同一個家，不需要跨域了
+# 允許 CORS (雖然同源部署後其實不太需要了，但保留著方便開發)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-API_URL = "https://data.gcis.nat.gov.tw/od/data/api/9D17AE0D-09B5-4732-A8F4-81C2EE9DED26"
-
-# 1. 這是首頁：當有人連線到網址，直接把 index.html 給他看
+# --- 核心修改：讓後端直接提供前端頁面 ---
 @app.get("/")
 def read_root():
-    return FileResponse('index.html')
+    # 這裡改成直接回傳 HTML 檔案
+    if os.path.exists("index.html"):
+        return FileResponse("index.html")
+    return {"message": "後端已啟動，但在伺服器上找不到 index.html 檔案"}
 
-# 2. 這是 API：原本的查詢功能
-@app.get("/api/company/{ubn}")
-def search_ubn(ubn: str):
-    print(f"查詢統編：{ubn}")
-    
-    params = {
-        "$format": "json",
-        "$filter": f"Business_Accounting_NO eq {ubn}",
-        "$top": 1
-    }
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        "Accept": "application/json"
-    }
+# -------------------------------------
 
+def deep_search_name(data):
+    """
+    核心演算法：遞迴搜索 (Recursive Search)
+    """
+    target_keys = [
+        "營業人名稱", "機關名稱", "中文名稱", "商業名稱", 
+        "公司名稱", "名稱", "Company_Name", "Commercial_Name"
+    ]
+
+    if isinstance(data, dict):
+        for key in target_keys:
+            if key in data and data[key] and isinstance(data[key], str) and len(data[key]) > 1:
+                return data[key]
+        for key, value in data.items():
+            if isinstance(value, (dict, list)):
+                found = deep_search_name(value)
+                if found: return found
+
+    elif isinstance(data, list):
+        for item in data:
+            found = deep_search_name(item)
+            if found: return found
+            
+    return None
+
+def fetch_from_g0v(ubn: str):
+    url = f"https://company.g0v.ronny.tw/api/show/{ubn}"
     try:
-        response = requests.get(API_URL, params=params, headers=headers, verify=False, timeout=5)
-        data = response.json()
-        if len(data) > 0:
-            return {"name": data[0]["Company_Name"]}
-        else:
-            return {"name": "查無此統編"}
+        # 降低 Timeout 避免卡住太久
+        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+        res_json = response.json()
+        if "data" in res_json:
+            return deep_search_name(res_json["data"])
+        return None
     except Exception as e:
-        # 備用資料庫
-        backup_db = {
-            "23300080": "台灣積體電路製造股份有限公司 (備用)",
-            "04126516": "玉山商業銀行股份有限公司",
-            "16606102": "網路家庭國際資訊股份有限公司"
-        }
-        if ubn in backup_db:
-            return {"name": backup_db[ubn]}
-        return {"name": "連線失敗且無備用資料"}
+        print(f"❌ [g0v] 錯誤: {e}")
+        return None
 
-if __name__ == "__main__":
-    # 這裡的 port 設定是給雲端用的
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+def fetch_from_mof_crawler(ubn: str):
+    url = "https://www.etax.nat.gov.tw/etwmain/etw113w1/result"
+    payload = {"ban": ubn}
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Referer": "https://www.etax.nat.gov.tw/etwmain/etw113w1/query",
+        "Origin": "https://www.etax.nat.gov.tw"
+    }
+    try:
+        response = requests.post(url, data=payload, headers=headers, timeout=6)
+        if response.status_code == 200:
+            match = re.search(r'營業人名稱.*?<td.*?>(.*?)</td>', response.text, re.DOTALL)
+            if match: return match.group(1).strip()
+        return None
+    except Exception as e:
+        print(f"❌ [財政部] 錯誤: {e}")
+        return None
+
+def fetch_from_gcis(ubn: str, type_code: str):
+    url = "https://data.gcis.nat.gov.tw/od/data/api/" + type_code
+    params = {"$format": "json", "$filter": f"Business_Accounting_NO eq {ubn}", "$skip": 0, "$top": 1}
+    try:
+        response = requests.get(url, params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+        data = response.json()
+        if isinstance(data, list) and len(data) > 0:
+            return deep_search_name(data[0])
+        return None
+    except:
+        return None
+
+@app.get("/api/company/{ubn}")
+def query_company(ubn: str):
+    print(f"\n--- 收到查詢請求: {ubn} ---")
+    
+    # 策略順序：g0v -> 財政部 -> 官方 API
+    if result := fetch_from_g0v(ubn): return {"name": result}
+    if result := fetch_from_mof_crawler(ubn): return {"name": result}
+    if result := fetch_from_gcis(ubn, "5F64D864-61CB-4D0D-8AD9-492047CC1EA6"): return {"name": result}
+    if result := fetch_from_gcis(ubn, "45A17014-F975-4C3D-A614-38742F1C6339"): return {"name": result}
+
+    return {"name": ""}
